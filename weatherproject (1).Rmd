@@ -1,0 +1,213 @@
+---
+title: "CSR Project"
+author: "Gokulakrishnan Ariyalur Narasimhan & Varun Ozarkar"
+date: "July 31, 2017"
+output: pdf_document
+---
+```{r}
+#Packages used
+library(readxl)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(RCurl)
+library(RSQLite)
+library(ggplot2)
+library(knitr)
+library(lubridate)
+
+
+```
+
+```{r}
+#Collecting data
+#For collecting data we used instant data scrapper to obtain 27280 rows of data
+#which also consisted of
+
+#Importing the scraped Data
+weatherdataraw <- read_csv("weatherdata.csv")
+
+weatherdata1 <- weatherdataraw[,c(-1)]
+
+nrow(weatherdata1) #no of rows in weatherdata1
+sum(is.na(weatherdata1$X2)) #no of NA values in the weatherdata1 column X2
+weatherdata2<-weatherdata1[complete.cases(weatherdata1$X2),]#Removing all rows with NA values in column X2
+nrow(weatherdata2) #no of rows in weatherdata2 after removing NA values
+duration <- ymd(19450101) - ymd(20150131)
+#we find that nrow(weatherdata2) = duration +1, hence we can say that the dates are now in sequence and there are no missing dates.
+
+#When extracting the data we did not obtain the exact dates when scraping hence 
+#the dates where filled using sequence generation starting from 1st jan 1945
+weatherdata2$X2<-seq(as.Date("1945/1/1"), as.Date("2015/1/31"), "days")
+weatherdata2
+weatherdata2$X2<-strftime(weatherdata2$X2,"%d/%B/%Y")
+
+```
+
+```{r}
+#For easier Understanding and analysis we have split the Events Coulumn using functions into
+#the five climatic events
+Events <- c()
+EventsData <- function(){
+  
+  RainEvents<-c()
+  
+  for(i in 1:length(weatherdata2$Event)){
+    if(length(grep("Rain",gsub(',','',weatherdata2$Event[i]),  perl = T, value = F))>0){
+      RainEvents<-c(RainEvents,"Rain")}
+    else{
+      RainEvents<-c(RainEvents,"")
+    }
+  }
+  
+  FogEvents<-c()
+  
+  for(i in 1:length(weatherdata2$Event)){
+    if(length(grep("Fog",gsub(',','',weatherdata2$Event[i]),  perl = T, value = F))>0){
+      FogEvents<-c(FogEvents,"Fog")}
+    else{
+      FogEvents<-c(FogEvents,"")
+    }
+  }
+  
+  
+  SnowEvents<-c()
+  for(i in 1:length(weatherdata2$Event)){
+    if(length(grep("Snow",gsub(',','',weatherdata2$Event[i]),  perl = T, value = F))>0){
+      SnowEvents<-c(SnowEvents,"Snow")}
+    else{
+      SnowEvents<-c(SnowEvents,"")
+    }
+  }
+  
+  ThunderEvents <- c()
+  for(i in 1:length(weatherdata2$Event)){
+    if(length(grep("Thunderstorm",gsub(',','',weatherdata2$Event[i]),  perl = T, value = F))>0){
+      ThunderEvents <- c(ThunderEvents,"Thunderstorm")}
+    else{
+      ThunderEvents <- c(ThunderEvents,"")
+    }
+  }
+  
+  TornadoEvents <- c()
+  for(i in 1:length(weatherdata2$Event)){
+    if(length(grep("Tornado",gsub(',','',weatherdata2$Event[i]),  perl = T, value = F))>0){
+      TornadoEvents <- c(TornadoEvents,"Tornado")}
+    else{
+      TornadoEvents <- c(TornadoEvents,"")
+    }
+  }
+  
+  Events_data<-data.frame(weatherdata2$Event,SnowEvents,RainEvents, FogEvents, TornadoEvents, ThunderEvents)
+  
+}
+Events_data <- EventsData()
+
+#After spreading we bind the Events data with the original dataframe
+weatherdata2 <- cbind(weatherdata2[,1:8], Events_data[,2:6])
+```
+
+```{r}
+
+#final cleaning of data
+#the date column is seperated into day,month,day
+cleandata<-weatherdata2 %>%
+  separate(X2,into=c("Date","Month","Year")) 
+cleandata<-as.data.frame(cleandata)
+cleandata$`Dew point(F)`<-as.numeric(cleandata$`Dew point`)
+#we remove the extra data which we scrapped (january 2015)
+cleandata<-subset(cleandata, Year < 2015)
+
+#The events are stored in different data frames to store in the database and perform analysis
+Snow<-as_tibble(select(cleandata,Date,Month,Year,`Temperature(F)`,SnowEvents))
+
+Rain<-as_tibble(select(cleandata,Date,Month,Year,`Temperature(F)`,RainEvents))
+
+Fog<-as_tibble(select(cleandata,Date,Month,Year,`Temperature(F)`,`Visibility(mi)`,FogEvents))
+
+Tornado<-as_tibble(select(cleandata,Date,Month,Year,`Wind(mi/hr)`,`Visibility(mi)`,TornadoEvents))
+
+Thunder<-as_tibble(select(cleandata,Date,Month,Year,`Visibility(mi)`,ThunderEvents))
+
+write_csv(cleandata,"cleandata.csv")
+```
+
+
+```{r}
+#Creating the database
+#Initiating the database connection with SQLite package
+
+db <- dbConnect(SQLite(), dbname="weather.sqlite")
+dbWriteTable(conn = db, name = "weather",value = cleandata,
+             row.names = FALSE,header=T,overwrite=TRUE)
+
+dbWriteTable(conn = db, name = "snow",value = Snow,
+             row.names = FALSE,header=T,overwrite=TRUE)
+
+
+dbWriteTable(conn = db, name = "rain",value = Rain,
+             row.names = FALSE,header=T,overwrite=TRUE)
+
+dbWriteTable(conn = db, name = "thunder",value = Thunder,
+             row.names = FALSE,header=T,overwrite=TRUE)
+
+dbWriteTable(conn = db, name = "tornado",value = Tornado,
+             row.names = FALSE,header=T,overwrite=TRUE)
+
+```
+
+
+```{r}
+
+#Retrieving data from tables in database
+#Trial operations are performed on the database
+#trial1 retrieving dates which have snow
+
+#low vivisbility days
+trial1<-dbGetQuery(db,"select Date,Month,Year,`Visibility(mi)` from weather
+                   where FogEvents= 'Fog'
+                   and `Visibility(mi)` < 5 ")
+trial1                  
+#retrieve dates with temperature below 35 and snow
+trial2<- dbGetQuery(db,"select * from weather 
+                    where `Temperature(F)`< 20
+                    and SnowEvents='Snow'")
+trial2            
+# very hot days in March
+trial3<-dbGetQuery(db,"select Date,Month,Year,`Temperature(F)`from weather
+                   where `Temperature(F)` > 60
+                   and Month='March'")
+
+trial3
+```
+
+
+```{r}
+
+#Analysis
+
+#number of rain days in a year
+raindays<-dbGetQuery(db,"select  Month, Year, count(RainEvents) as raindays from weather
+                     where RainEvents ='Rain'
+                     Group by  Year")
+
+
+ggplot(raindays)+ 
+  geom_point(aes(x=Year,raindays))
+  
+
+
+#How sea level pressure is affected over time 
+temp<- cleandata %>%
+  mutate(Year = as.integer(Year))%>%
+  group_by(Year)%>%
+  summarise(temp=mean(`Temperature(F)`,na.rm=T),
+            press = mean(`Sea Level Pressure(in)`,na.rm=T),
+            humi=mean(`Humidity(%)`,na.rm=T))
+
+
+ggplot(temp,aes(Year,press))+
+  geom_point()+
+  geom_smooth()+
+scale_x_continuous(limits = c(1950,2000))
+```
